@@ -1,5 +1,13 @@
 ## Changelog
 
+- v8.6
+
+  - Changed
+
+    - BUG FIX: Passing `-ko` / `--keywords-only` or `-ra` / `--regex-after` patterns in **double quotes** in bash (e.g. `-ko "\.js(\?|$)"`) causes `$)` to be expanded by the shell to an empty string, giving an invalid regex `\.js(\?|` (unbalanced parenthesis). The resulting `re.error` was silently swallowed, returning no results with no explanation. Both `-ko` and `-ra` patterns are now validated immediately after argument parsing; an invalid regex exits with a clear error and a tip to use single quotes (e.g. `-ko '\. js(\?|$)'`).
+    - CHANGE: The `-ko` / `--keywords-only` pattern is wrapped for the Wayback CDX and Common Crawl APIs by a new `cdxKeywordsFilter()` helper. It always adds a `.*` prefix so the pattern can match anywhere in the URL (both APIs use Python `re.match()` semantics (anchors to start of string, not full-string)). Whether a `.*` suffix is added depends on the pattern: if it contains an **unescaped `$`** the suffix is omitted (the `$` anchors to end-of-URL already); otherwise `.*` is appended so the pattern acts as a substring match. Examples: `\.js` → `filter=...(\.js).*`; `\.js(\?.*|$)` → `filter=...(\.js(\?.*|$))`. If the Wayback CDX API returns a 502/504 Gateway Timeout when `-ko` is used, a message is shown. The Common Crawl verbose output (`-v`) also now correctly includes the full requested index URL with the keywords filter.
+    - BUG FIX: The `-ft` / `--filter-mime-types` and `-mt` / `--match-mime-types` arguments rejected valid MIME types containing characters such as `.`, `_`, `!`, etc. The validation regex has been updated to allow all RFC-valid MIME token characters (`A-Z a-z 0-9 ! # $ % & ' * + - . ^ _ backtick { | } ~`) on each side of exactly one `/`.
+
 - v8.5
 
   - Changed

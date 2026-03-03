@@ -2771,17 +2771,54 @@ def validateArgDate(x):
     return x
 
 
+
+
+def cdxKeywordsFilter(pattern, filterField="original"):
+    """
+    Build a filter=original:... string for use in the Wayback CDX API.
+
+    The CDX API filter uses Python re.match() semantics (cf.
+    https://docs.python.org/3/library/re.html#re.match).  re.match anchors
+    to the START of the string but does NOT require the pattern to match to
+    the end.  A .* prefix is therefore always added so the pattern can match
+    anywhere in the URL, not just at the very start.
+
+    Whether a trailing .* is added depends on the pattern:
+      - If the pattern contains an unescaped $ ($ not preceded by \\),
+        no trailing .* is added — $ already asserts end-of-string.
+      - Otherwise a trailing .* is appended so that patterns without an
+        explicit $ anchor also match URLs where the pattern appears mid-URL.
+
+    The filterField parameter controls the CDX/CommonCrawl filter field:
+      - Wayback CDX:    filterField="original"  -> filter=original:.*(...)
+      - Common Crawl:   filterField="~url"       -> filter=~url:.*(...)
+
+    Examples:
+        r'\\.js'           -> filter=original:.*(\. js).*
+        r'\\.js$'          -> filter=original:.*(\. js$)
+        r'\\.js(\\?.*|$)' -> filter=original:.*(\. js(\\?.*|$))
+        r'\\$'             -> filter=original:.*.(\\$).*  (escaped $, literal)
+    """
+    has_end_anchor = bool(re.search(r'(?<!\\)\$', pattern))
+    suffix = "" if has_end_anchor else ".*"
+    return "&filter=" + filterField + ":.*(" + pattern + ")" + suffix
+
 def validateArgMimeTypes(x):
     """
     Validate the -ft and -mt arguments
     The passed values will be changed to lower case.
-    Only values matching the regex '[a-z]+\/[a-z0-9\-\+]+' separated by a comma
+    Only values matching valid MIME types separated by a comma.
+    Allowed characters either side of the single '/': A-Z a-z 0-9 ! # $ % & ' * + - . ^ _ ` { | } ~
     """
     invalid = False
     x = x.lower()
     mimeTypes = x.split(",")
+    # Valid MIME token chars: a-z 0-9 ! # $ % & ' * + - . ^ _ ` { | } ~
+    # Exactly one '/' separating type from subtype.
+    token = r"[a-z0-9!#$%&'*+\-.^_`{|}~]+"
+    pattern = re.compile(r"^" + token + r"/" + token + r"$")
     for mimeType in mimeTypes:
-        if not re.fullmatch(r"[a-z]+/[a-z0-9\-\+]+", mimeType):
+        if not pattern.match(mimeType):
             invalid = True
             break
     if invalid:
@@ -4813,11 +4850,11 @@ def getWaybackUrls():
         filterKeywords = ""
         if args.keywords_only:
             if args.keywords_only == "#CONFIG":
-                filterKeywords = (
-                    "&filter=original:.*(" + re.escape(FILTER_KEYWORDS).replace(",", "|") + ").*"
+                filterKeywords = cdxKeywordsFilter(
+                    re.escape(FILTER_KEYWORDS).replace(",", "|")
                 )
             else:
-                filterKeywords = "&filter=original:.*(" + args.keywords_only + ").*"
+                filterKeywords = cdxKeywordsFilter(args.keywords_only)
 
         # Add the date filters if they were passed
         if args.from_date is None:
@@ -4894,6 +4931,19 @@ def getWaybackUrls():
                             "red",
                         )
                     )
+                    return
+
+                # If a Gateway Timeout, show a hint if -ko was used
+                if resp.status_code in (502, 504):
+                    msg = "Wayback - [ " + str(resp.status_code) + " ] Gateway Timeout from the Wayback Machine (Archive.org)."
+                    if args.keywords_only:
+                        msg += (
+                            " This may be caused by a complex -ko / --keywords-only regex."
+                            " The pattern is used as a CDX filter with a .* prefix (e.g. .*your_pattern),"
+                            " so it must match the rest of the URL to the end."
+                            " Try simplifying the pattern, e.g. '\\. js' instead of '\\. js(\\?|$)'."
+                        )
+                    writerr(colored(msg, "red"))
                     return
 
                 if resp.text.lower().find("blocked site error") > 0:
@@ -5063,11 +5113,11 @@ def processCommonCrawlCollection(cdxApiUrl):
             filterKeywords = ""
             if args.keywords_only:
                 if args.keywords_only == "#CONFIG":
-                    filterKeywords = (
-                        "&filter=~url:.*(" + re.escape(FILTER_KEYWORDS).replace(",", "|") + ").*"
+                    filterKeywords = cdxKeywordsFilter(
+                        re.escape(FILTER_KEYWORDS).replace(",", "|"), "~url"
                     )
                 else:
-                    filterKeywords = "&filter=~url:.*(" + args.keywords_only + ").*"
+                    filterKeywords = cdxKeywordsFilter(args.keywords_only, "~url")
 
             commonCrawlUrl = cdxApiUrl + "?output=json&fl=timestamp,url,mime,status,digest&url="
 
@@ -5421,6 +5471,16 @@ def getCommonCrawlUrls():
         else:
             filterCode = "&filter=!~status:(" + re.escape(FILTER_CODE).replace(",", "|") + ")"
 
+        # Set keywords filter if -ko argument passed (for verbose display)
+        filterKeywords = ""
+        if args.keywords_only:
+            if args.keywords_only == "#CONFIG":
+                filterKeywords = cdxKeywordsFilter(
+                    re.escape(FILTER_KEYWORDS).replace(",", "|"), "~url"
+                )
+            else:
+                filterKeywords = cdxKeywordsFilter(args.keywords_only, "~url")
+
         if verbose():
             if args.filter_responses_only:
                 url = (
@@ -5437,6 +5497,7 @@ def getCommonCrawlUrls():
                     + path
                     + filterMIME
                     + filterCode
+                    + filterKeywords
                 )
             write(
                 colored(
@@ -6985,13 +7046,11 @@ def processResponsesWayback():
             filterKeywords = ""
             if args.keywords_only:
                 if args.keywords_only == "#CONFIG":
-                    filterKeywords = (
-                        "&filter=original:.*("
-                        + re.escape(FILTER_KEYWORDS).replace(",", "|")
-                        + ").*"
+                    filterKeywords = cdxKeywordsFilter(
+                        re.escape(FILTER_KEYWORDS).replace(",", "|")
                     )
                 else:
-                    filterKeywords = "&filter=original:.*(" + args.keywords_only + ").*"
+                    filterKeywords = cdxKeywordsFilter(args.keywords_only)
 
             # Get the list again with filters and include timestamp
             linksFound = set()
@@ -8129,7 +8188,7 @@ def main():
         "-ko",
         "--keywords-only",
         action="store",
-        help=r'Only return links and responses that contain keywords that you are interested in. This can reduce the time it takes to get results. If you provide the flag with no value, Keywords are taken from the comma separated list in the "config.yml" file with the "FILTER_KEYWORDS" key, otherwise you can pass an specific Regex value to use, e.g. -ko "admin" to only get links containing the word admin, or -ko "\.js(\?|$)" to only get JS files. The Regex check is NOT case sensitive.',
+        help=r"Only return links and responses that contain keywords that you are interested in. This can reduce the time it takes to get results. If you provide the flag with no value, Keywords are taken from the comma separated list in the \"config.yml\" file with the \"FILTER_KEYWORDS\" key, otherwise you can pass a specific Python Regex value. e.g. -ko 'admin' to only get links containing the word admin, or -ko '\.js(\?.*|$)' to only get JS files. The Regex check is NOT case sensitive. NOTE: The pattern is used as an approximate pre-filter on the Wayback CDX API (wrapped as .*pattern.*, so anchors like $ may not behave as expected at the CDX level), then applied exactly as a Python regex locally. Use single quotes to avoid shell expansion of $ and other special characters.",
         nargs="?",
         const="#CONFIG",
     )
@@ -8211,6 +8270,34 @@ def main():
     if args.version:
         showVersion()
         sys.exit()
+
+    # Validate -ra and -ko regex patterns early so corrupted patterns (e.g. from
+    # bash $-expansion inside double-quoted strings) give a clear error instead of
+    # silently returning zero results.
+    if args.regex_after is not None:
+        try:
+            re.compile(args.regex_after)
+        except re.error as e:
+            writerr(
+                colored(
+                    f'ERROR: -ra / --regex-after value is not a valid regex: {e}\n'
+                    'TIP: Use single quotes to avoid shell expansion, e.g. -ra \'\\. js(\\?|$)\'',
+                    "red",
+                )
+            )
+            sys.exit()
+    if args.keywords_only is not None and args.keywords_only != "#CONFIG":
+        try:
+            re.compile(args.keywords_only)
+        except re.error as e:
+            writerr(
+                colored(
+                    f'ERROR: -ko / --keywords-only value is not a valid regex: {e}\n'
+                    'TIP: Use single quotes to avoid shell expansion, e.g. -ko \'\\. js(\\?|$)\'',
+                    "red",
+                )
+            )
+            sys.exit()
 
     # If --providers was passed, then manually set the exclude arguments;
     if args.providers:
